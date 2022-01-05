@@ -1,0 +1,36 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/can.h>
+#include <linux/skbuff.h>
+#include <net/sock.h>
+
+kfunc:netif_rx_internal
+{
+  @skb[tid] = args->skb;
+}
+
+kretfunc:netif_rx_internal
+/@skb[tid]/
+{
+  $skb = (struct sk_buff *)@skb[tid];
+  $sk = $skb->sk; // owning socket
+  $family = $sk->__sk_common.skc_family; // address family
+
+  if ($family == AF_CAN) {
+    $ts = $skb->tstamp; // timestamp recorded by driver
+    $dev =$skb->dev->name; // network device name
+    $frame = (struct can_frame *)$skb->data; // can frame
+    $CAN_SFF_MASK = 0x00007fff; // CAN standard frame format bitmask
+    $id = $frame->can_id & $CAN_SFF_MASK; // can id
+    $len = $frame->len;  // can data length
+    $data = $frame->data; // can data
+
+    printf("(%lu)  %-5s  %03X  [%d]  %r\n", $ts, $dev, $id, $len, buf($data, $len));
+  }
+  delete(@skb[tid]);
+}
+
+END
+{
+  clear(@skb);
+}

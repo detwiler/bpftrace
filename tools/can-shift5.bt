@@ -1,0 +1,45 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/can.h>
+#include <linux/skbuff.h>
+#include <net/sock.h>
+
+kfunc:netif_rx_internal
+{
+  @skb[tid] = args->skb;
+}
+
+kretfunc:netif_rx_internal
+/@skb[tid]/
+{
+  $skb = (struct sk_buff *)@skb[tid];
+  $sk = $skb->sk; // owning socket
+  $family = $sk->__sk_common.skc_family; // address family
+
+  if ($family == AF_CAN) {
+    $frame = (struct can_frame *)$skb->data;
+    $len = $frame->len;
+    if ($len == 2) {
+      $data = *(uint16 *)$frame->data;
+      $data = ($data >> 8) | (($data << 8) & 0xff00); // byte swap to little endian
+      if ($data == 0x1553) {
+        $CAN_SFF_MASK = 0x00007fff;
+        $id = $frame->can_id & $CAN_SFF_MASK;
+        $last = @shift5[$id];
+        $cur = $skb->tstamp;
+        $delta = $cur - $last;
+        if ($delta < 1e9) {
+          printf("SHIFT5: CAN ID: %X, delta: %lu ns\n", $id, $delta);
+        }
+        @shift5[$id] = $cur;
+      }
+    }
+  }
+  delete(@skb[tid]);
+}
+
+END
+{
+  clear(@shift5);
+  clear(@skb);
+}
